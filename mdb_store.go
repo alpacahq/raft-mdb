@@ -2,10 +2,11 @@ package raftmdb
 
 import (
 	"fmt"
-	"github.com/armon/gomdb"
-	"github.com/hashicorp/raft"
 	"os"
 	"path/filepath"
+
+	"github.com/bmatsuo/lmdb-go/lmdb"
+	"github.com/hashicorp/raft"
 )
 
 const (
@@ -14,30 +15,30 @@ const (
 	dbMaxMapSize = 128 * 1024 * 1024 // 128MB default max map size
 )
 
-// Sub-dir used for MDB
-var mdbPath = "mdb/"
+// Sub-dir used for LMDB
+var lmdbPath = "lmdb/"
 
-// MDBStore provides an implementation of LogStore and StableStore,
+// LMDBStore provides an implementation of LogStore and StableStore,
 // all backed by a single MDB database.
-type MDBStore struct {
-	env     *mdb.Env
+type LMDBStore struct {
+	env     *lmdb.Env
 	path    string
-	maxSize uint64
+	maxSize int64
 }
 
-// NewMDBStore returns a new MDBStore and potential
+// NewLMDBStore returns a new MDBStore and potential
 // error. Requres a base directory from which to operate.
 // Uses the default maximum size.
-func NewMDBStore(base string) (*MDBStore, error) {
-	return NewMDBStoreWithSize(base, 0)
+func NewLMDBStore(base string) (*LMDBStore, error) {
+	return NewLMDBStoreWithSize(base, 0)
 }
 
-// NewMDBStore returns a new MDBStore and potential
+// NewLMDBStoreWithSize returns a new MDBStore and potential
 // error. Requres a base directory from which to operate,
 // and a maximum size. If maxSize is not 0, a default value is used.
-func NewMDBStoreWithSize(base string, maxSize uint64) (*MDBStore, error) {
+func NewLMDBStoreWithSize(base string, maxSize int64) (*LMDBStore, error) {
 	// Get the paths
-	path := filepath.Join(base, mdbPath)
+	path := filepath.Join(base, lmdbPath)
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return nil, err
 	}
@@ -48,13 +49,13 @@ func NewMDBStoreWithSize(base string, maxSize uint64) (*MDBStore, error) {
 	}
 
 	// Create the env
-	env, err := mdb.NewEnv()
+	env, err := lmdb.NewEnv()
 	if err != nil {
 		return nil, err
 	}
 
 	// Create the struct
-	store := &MDBStore{
+	store := &LMDBStore{
 		env:     env,
 		path:    path,
 		maxSize: maxSize,
@@ -69,9 +70,9 @@ func NewMDBStoreWithSize(base string, maxSize uint64) (*MDBStore, error) {
 }
 
 // initialize is used to setup the mdb store
-func (m *MDBStore) initialize() error {
+func (m *LMDBStore) initialize() error {
 	// Allow up to 2 sub-dbs
-	if err := m.env.SetMaxDBs(mdb.DBI(2)); err != nil {
+	if err := m.env.SetMaxDBs(2); err != nil {
 		return err
 	}
 
@@ -81,7 +82,7 @@ func (m *MDBStore) initialize() error {
 	}
 
 	// Open the DB
-	if err := m.env.Open(m.path, mdb.NOTLS, 0755); err != nil {
+	if err := m.env.Open(m.path, lmdb.NoTLS, 0755); err != nil {
 		return err
 	}
 
@@ -95,19 +96,22 @@ func (m *MDBStore) initialize() error {
 }
 
 // Close is used to gracefully shutdown the MDB store
-func (m *MDBStore) Close() error {
+func (m *LMDBStore) Close() error {
 	m.env.Close()
 	return nil
 }
 
 // startTxn is used to start a transaction and open all the associated sub-databases
-func (m *MDBStore) startTxn(readonly bool, open ...string) (*mdb.Txn, []mdb.DBI, error) {
-	var txFlags uint = 0
-	var dbFlags uint = 0
+func (m *LMDBStore) startTxn(readonly bool, open ...string) (*lmdb.Txn, []lmdb.DBI, error) {
+	var (
+		txFlags uint
+		dbFlags uint
+	)
+
 	if readonly {
-		txFlags |= mdb.RDONLY
+		txFlags |= lmdb.Readonly
 	} else {
-		dbFlags |= mdb.CREATE
+		dbFlags |= lmdb.Create
 	}
 
 	tx, err := m.env.BeginTxn(nil, txFlags)
@@ -115,9 +119,9 @@ func (m *MDBStore) startTxn(readonly bool, open ...string) (*mdb.Txn, []mdb.DBI,
 		return nil, nil, err
 	}
 
-	var dbs []mdb.DBI
+	var dbs []lmdb.DBI
 	for _, name := range open {
-		dbi, err := tx.DBIOpen(name, dbFlags)
+		dbi, err := tx.OpenDBI(name, dbFlags)
 		if err != nil {
 			tx.Abort()
 			return nil, nil, err
@@ -128,21 +132,21 @@ func (m *MDBStore) startTxn(readonly bool, open ...string) (*mdb.Txn, []mdb.DBI,
 	return tx, dbs, nil
 }
 
-func (m *MDBStore) FirstIndex() (uint64, error) {
+func (m *LMDBStore) FirstIndex() (uint64, error) {
 	tx, dbis, err := m.startTxn(true, dbLogs)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Abort()
 
-	cursor, err := tx.CursorOpen(dbis[0])
+	cursor, err := tx.OpenCursor(dbis[0])
 	if err != nil {
 		return 0, err
 	}
 	defer cursor.Close()
 
-	key, _, err := cursor.Get(nil, mdb.FIRST)
-	if err == mdb.NotFound {
+	key, _, err := cursor.Get(nil, nil, lmdb.First)
+	if lmdb.IsNotFound(err) {
 		return 0, nil
 	} else if err != nil {
 		return 0, err
@@ -152,21 +156,21 @@ func (m *MDBStore) FirstIndex() (uint64, error) {
 	return bytesToUint64(key), nil
 }
 
-func (m *MDBStore) LastIndex() (uint64, error) {
+func (m *LMDBStore) LastIndex() (uint64, error) {
 	tx, dbis, err := m.startTxn(true, dbLogs)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Abort()
 
-	cursor, err := tx.CursorOpen(dbis[0])
+	cursor, err := tx.OpenCursor(dbis[0])
 	if err != nil {
 		return 0, err
 	}
 	defer cursor.Close()
 
-	key, _, err := cursor.Get(nil, mdb.LAST)
-	if err == mdb.NotFound {
+	key, _, err := cursor.Get(nil, nil, lmdb.Last)
+	if lmdb.IsNotFound(err) {
 		return 0, nil
 	} else if err != nil {
 		return 0, err
@@ -176,8 +180,8 @@ func (m *MDBStore) LastIndex() (uint64, error) {
 	return bytesToUint64(key), nil
 }
 
-// Gets a log entry at a given index
-func (m *MDBStore) GetLog(index uint64, logOut *raft.Log) error {
+// GetLog gets a log entry at a given index
+func (m *LMDBStore) GetLog(index uint64, logOut *raft.Log) error {
 	key := uint64ToBytes(index)
 
 	tx, dbis, err := m.startTxn(true, dbLogs)
@@ -187,7 +191,7 @@ func (m *MDBStore) GetLog(index uint64, logOut *raft.Log) error {
 	defer tx.Abort()
 
 	val, err := tx.Get(dbis[0], key)
-	if err == mdb.NotFound {
+	if lmdb.IsNotFound(err) {
 		return raft.ErrLogNotFound
 	} else if err != nil {
 		return err
@@ -197,13 +201,13 @@ func (m *MDBStore) GetLog(index uint64, logOut *raft.Log) error {
 	return decodeMsgPack(val, logOut)
 }
 
-// Stores a log entry
-func (m *MDBStore) StoreLog(log *raft.Log) error {
+// StoreLog stores a log entry
+func (m *LMDBStore) StoreLog(log *raft.Log) error {
 	return m.StoreLogs([]*raft.Log{log})
 }
 
-// Stores multiple log entries
-func (m *MDBStore) StoreLogs(logs []*raft.Log) error {
+// StoreLogs stores multiple log entries
+func (m *LMDBStore) StoreLogs(logs []*raft.Log) error {
 	// Start write txn
 	tx, dbis, err := m.startTxn(false, dbLogs)
 	if err != nil {
@@ -228,8 +232,8 @@ func (m *MDBStore) StoreLogs(logs []*raft.Log) error {
 	return tx.Commit()
 }
 
-// Deletes a range of log entries. The range is inclusive.
-func (m *MDBStore) DeleteRange(minIdx, maxIdx uint64) error {
+// DeleteRange deletes a range of log entries. The range is inclusive.
+func (m *LMDBStore) DeleteRange(minIdx, maxIdx uint64) error {
 	// Start write txn
 	tx, dbis, err := m.startTxn(false, dbLogs)
 	if err != nil {
@@ -252,9 +256,9 @@ DELETE:
 }
 
 // innerDeleteRange does a single pass to delete the indexes (inclusively)
-func (m *MDBStore) innerDeleteRange(tx *mdb.Txn, dbis []mdb.DBI, minIdx, maxIdx uint64) (num int, err error) {
+func (m *LMDBStore) innerDeleteRange(tx *lmdb.Txn, dbis []lmdb.DBI, minIdx, maxIdx uint64) (num int, err error) {
 	// Open a cursor
-	cursor, err := tx.CursorOpen(dbis[0])
+	cursor, err := tx.OpenCursor(dbis[0])
 	if err != nil {
 		return num, err
 	}
@@ -263,19 +267,19 @@ func (m *MDBStore) innerDeleteRange(tx *mdb.Txn, dbis []mdb.DBI, minIdx, maxIdx 
 	didDelete := false
 	for {
 		if didDelete {
-			key, _, err = cursor.Get(nil, mdb.GET_CURRENT)
+			key, _, err = cursor.Get(nil, nil, lmdb.Current)
 			didDelete = false
 
 			// LMDB will return EINVAL(22) for the GET_CURRENT op if
 			// there is no further keys. We treat this as no more
 			// keys being found.
-			if num, ok := err.(mdb.Errno); ok && num == 22 {
-				err = mdb.NotFound
+			if num, ok := err.(lmdb.Errno); ok && num == 22 {
+				err = lmdb.NotFound
 			}
 		} else {
-			key, _, err = cursor.Get(nil, mdb.NEXT)
+			key, _, err = cursor.Get(nil, nil, lmdb.Next)
 		}
-		if err == mdb.NotFound || len(key) == 0 {
+		if lmdb.IsNotFound(err) || len(key) == 0 {
 			break
 		} else if err != nil {
 			return num, err
@@ -301,7 +305,7 @@ func (m *MDBStore) innerDeleteRange(tx *mdb.Txn, dbis []mdb.DBI, minIdx, maxIdx 
 }
 
 // Set a K/V pair
-func (m *MDBStore) Set(key []byte, val []byte) error {
+func (m *LMDBStore) Set(key []byte, val []byte) error {
 	// Start write txn
 	tx, dbis, err := m.startTxn(false, dbConf)
 	if err != nil {
@@ -316,7 +320,7 @@ func (m *MDBStore) Set(key []byte, val []byte) error {
 }
 
 // Get a K/V pair
-func (m *MDBStore) Get(key []byte) ([]byte, error) {
+func (m *LMDBStore) Get(key []byte) ([]byte, error) {
 	// Start read txn
 	tx, dbis, err := m.startTxn(true, dbConf)
 	if err != nil {
@@ -325,7 +329,8 @@ func (m *MDBStore) Get(key []byte) ([]byte, error) {
 	defer tx.Abort()
 
 	val, err := tx.Get(dbis[0], key)
-	if err == mdb.NotFound {
+
+	if lmdb.IsNotFound(err) {
 		return nil, fmt.Errorf("not found")
 	} else if err != nil {
 		return nil, err
@@ -333,11 +338,11 @@ func (m *MDBStore) Get(key []byte) ([]byte, error) {
 	return val, nil
 }
 
-func (m *MDBStore) SetUint64(key []byte, val uint64) error {
+func (m *LMDBStore) SetUint64(key []byte, val uint64) error {
 	return m.Set(key, uint64ToBytes(val))
 }
 
-func (m *MDBStore) GetUint64(key []byte) (uint64, error) {
+func (m *LMDBStore) GetUint64(key []byte) (uint64, error) {
 	buf, err := m.Get(key)
 	if err != nil {
 		return 0, err

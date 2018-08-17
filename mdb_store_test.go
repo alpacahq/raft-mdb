@@ -2,13 +2,14 @@ package raftmdb
 
 import (
 	"bytes"
-	"github.com/hashicorp/raft"
 	"io/ioutil"
 	"os"
 	"testing"
+
+	"github.com/hashicorp/raft"
 )
 
-func MDBTestStore(t testing.TB) (string, *MDBStore) {
+func MDBTestStore(t testing.TB) (string, *LMDBStore) {
 	// Create a test dir
 	dir, err := ioutil.TempDir("", "raft")
 	if err != nil {
@@ -16,7 +17,7 @@ func MDBTestStore(t testing.TB) (string, *MDBStore) {
 	}
 
 	// New level
-	store, err := NewMDBStore(dir)
+	store, err := NewLMDBStore(dir)
 	if err != nil {
 		t.Fatalf("err: %v ", err)
 	}
@@ -25,10 +26,10 @@ func MDBTestStore(t testing.TB) (string, *MDBStore) {
 }
 
 func TestMDB_StableStore(t *testing.T) {
-	var l interface{} = &MDBStore{}
+	var l interface{} = &LMDBStore{}
 	_, ok := l.(raft.StableStore)
 	if !ok {
-		t.Fatalf("MDBStore is not StableStore")
+		t.Fatalf("LMDBStore is not StableStore")
 	}
 }
 
@@ -41,7 +42,7 @@ func TestMDB_SetGet(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	// New level
-	l, err := NewMDBStore(dir)
+	l, err := NewLMDBStore(dir)
 	if err != nil {
 		t.Fatalf("err: %v ", err)
 	}
@@ -78,7 +79,7 @@ func TestMDB_SetGetUint64(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	// New level
-	l, err := NewMDBStore(dir)
+	l, err := NewLMDBStore(dir)
 	if err != nil {
 		t.Fatalf("err: %v ", err)
 	}
@@ -107,10 +108,10 @@ func TestMDB_SetGetUint64(t *testing.T) {
 }
 
 func TestMDB_LogStore(t *testing.T) {
-	var l interface{} = &MDBStore{}
+	var l interface{} = &LMDBStore{}
 	_, ok := l.(raft.LogStore)
 	if !ok {
-		t.Fatalf("MDBStore is not a LogStore")
+		t.Fatalf("LMDBStore is not a LogStore")
 	}
 }
 
@@ -123,7 +124,7 @@ func TestMDB_Logs(t *testing.T) {
 	defer os.RemoveAll(dir)
 
 	// New level
-	l, err := NewMDBStore(dir)
+	l, err := NewLMDBStore(dir)
 	if err != nil {
 		t.Fatalf("err: %v ", err)
 	}
